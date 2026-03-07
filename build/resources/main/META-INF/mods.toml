@@ -1,0 +1,34 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+[[mods]]
+modId="factionterritoryconnector"
+version="1.0.0"
+displayName="Faction Territory Connector"
+authors="You"
+description="Connects OPAC and Recruits for faction-based territory claims"
+
+[[dependencies.factionterritoryconnector]]
+    modId="forge"
+    mandatory=true
+    versionRange="[47,)"
+    ordering="NONE"
+    side="BOTH"
+[[dependencies.factionterritoryconnector]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="[1.20.1,1.21)"
+    ordering="NONE"
+    side="BOTH"
+[[dependencies.factionterritoryconnector]]
+    modId="openpartiesandclaims"
+    mandatory=true
+    versionRange="[0,)"
+    ordering="AFTER"
+    side="BOTH"
+[[dependencies.factionterritoryconnector]]
+    modId="recruits"
+    mandatory=true
+    versionRange="[0,)"
+    ordering="AFTER"
+    side="BOTH"

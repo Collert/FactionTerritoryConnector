@@ -1,0 +1,9 @@
+Manifest-Version: 1.0
+Specification-Title: factionterritoryconnector
+Specification-Vendor: You
+Specification-Version: 1
+Implementation-Title: FactionTerritoryConnector
+Implementation-Version: 1.0.0
+Implementation-Vendor: You
+Implementation-Timestamp: 2026-03-06T12:27:32-0800
+
