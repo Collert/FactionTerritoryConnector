@@ -31,7 +31,7 @@ public class FactionClaimWrapper {
      * Replaces the username string on the Xaero's map with the faction territory format
      */
     public String getPlayerUsername() {
-        return factionName + "'s Territory";
+        return factionName;
     }
 
     /**

@@ -1,0 +1,5 @@
+{
+  "gui.xaero_claims_claim_limit_reached": "You cannot claim chunks! (Requires Faction Leadership and Emeralds!)",
+  "gui.xaero_claims_forceload_limit_reached": "You cannot forceload chunks! (Requires Faction Leadership and Emeralds!)",
+  "gui.xaero_pac_title_entered_claim": "%1$s's territory%2$s"
+}
