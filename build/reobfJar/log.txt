@@ -149,4 +149,5 @@ Writing Output: /home/collert/Documents/FactionTerritoryConnector/build/reobfJar
   com/ftc/OPACClaimListener.class
   com/ftc/PermissionOverride.class
   com/ftc/RecruitsClaimListener.class
+  com/ftc/RecruitsSyncTask.class
   com/ftc/XaeroUIEnhancements.class

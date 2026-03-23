@@ -17,6 +17,8 @@ public class ClaimSyncManager {
         return FactionEvents.recruitsFactionManager.getFactionByStringID(team.getName());
     }
 
+    public static boolean isSyncing = false;
+
     public static boolean isFactionLeader(ServerPlayer player) {
         RecruitsFaction faction = getPlayerFaction(player);
         if (faction == null) return false;
