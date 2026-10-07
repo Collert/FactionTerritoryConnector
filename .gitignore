@@ -1,1 +1,6 @@
 _RenameSrg2Mcp_*
+build/
+.gradle/
+run/
+run-data/
+*.class

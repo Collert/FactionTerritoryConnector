@@ -1,0 +1,13 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "com.ftc.mixin.client",
+  "compatibilityLevel": "JAVA_17",
+  "client": [
+    "XaeroMapClaimsHighlighterMixin",
+    "XaeroMinimapClaimsHighlighterMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

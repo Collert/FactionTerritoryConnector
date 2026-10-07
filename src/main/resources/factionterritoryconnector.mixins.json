@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.ftc.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "mixins": [
+    "ServerClaimsManagerMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

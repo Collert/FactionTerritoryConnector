@@ -2,113 +2,117 @@ package com.ftc;
 
 import com.talhanation.recruits.ClaimEvents;
 import com.talhanation.recruits.world.RecruitsClaim;
-import net.minecraft.core.registries.Registries;
-import net.minecraft.resources.ResourceKey;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.level.ServerLevel;
+import com.talhanation.recruits.world.RecruitsFaction;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
-import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.server.ServerLifecycleHooks;
-import xaero.pac.common.claims.player.api.IPlayerChunkClaimAPI;
+import xaero.pac.common.claims.player.api.IPlayerClaimPosListAPI;
+import xaero.pac.common.claims.player.api.IPlayerDimensionClaimsAPI;
 import xaero.pac.common.server.api.OpenPACServerAPI;
 import xaero.pac.common.server.claims.api.IServerClaimsManagerAPI;
-import xaero.pac.common.server.claims.player.api.IServerPlayerClaimInfoAPI;
-import java.util.UUID;
-import java.util.Map;
-import java.util.HashMap;
-import java.util.List;
-import java.util.ArrayList;
+import xaero.pac.common.server.player.config.PlayerConfig;
 
-@Mod.EventBusSubscriber(modid = FactionTerritoryConnector.MOD_ID)
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+
+/**
+ * Recruits has no claim events, so every few seconds this compares Recruits' claims with OPAC's
+ * overworld claims and fixes OPAC to match. Recruits wins conflicts, so sieges and leadership
+ * changes carry over to OPAC (claims are owned by the faction leader there).
+ */
 public class RecruitsSyncTask {
-    
-    private static int tickCounter = 0;
-    
+
+    private static final int SYNC_INTERVAL_TICKS = 100;
+    private int tickCounter = 0;
+
     @SubscribeEvent
-    public static void onServerTick(TickEvent.ServerTickEvent event) {
-        if (event.phase == TickEvent.Phase.END) return;
-        
-        tickCounter++;
-        if (tickCounter >= 100) { // Every 5 seconds
-            tickCounter = 0;
-            syncClaims();
+    public void onServerTick(TickEvent.ServerTickEvent event) {
+        if (event.phase != TickEvent.Phase.START) return;
+        if (++tickCounter < SYNC_INTERVAL_TICKS) return;
+        tickCounter = 0;
+
+        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+        if (server == null || ClaimEvents.recruitsClaimManager == null) return;
+        try {
+            syncClaims(server);
+            ClaimSyncManager.refreshTerritoryNames(server);
+        } catch (Exception e) {
+            FactionTerritoryConnector.LOGGER.error("Failed to sync Recruits claims to OPAC", e);
         }
     }
 
-    private static void syncClaims() {
-        if (ServerLifecycleHooks.getCurrentServer() == null) return;
-        if (ClaimEvents.recruitsClaimManager == null) return;
-        
-        IServerClaimsManagerAPI opacManager = OpenPACServerAPI.get(ServerLifecycleHooks.getCurrentServer()).getServerClaimsManager();
-        ResourceLocation overworldDim = new ResourceLocation("minecraft", "overworld");
-        
-        // 1. Gather all OPAC claims in the overworld -> Map<ChunkPos, UUID>
-        Map<ChunkPos, UUID> opacClaims = new HashMap<>();
-        
-        opacManager.getPlayerInfoStream().forEach(playerInfo -> {
-            UUID playerId = playerInfo.getPlayerId();
-            var dimClaims = playerInfo.getDimension(overworldDim);
-            if (dimClaims != null) {
-                dimClaims.getStream().forEach(posList -> {
-                    posList.getStream().forEach(chunkPos -> {
-                        opacClaims.put(chunkPos, playerId);
-                    });
-                });
-            }
-        });
-        
-        // 2. Gather all Recruits claims -> Map<ChunkPos, UUID>
-        Map<ChunkPos, UUID> recClaims = new HashMap<>();
-        List<RecruitsClaim> allClaims = ClaimEvents.recruitsClaimManager.getAllClaims();
-        if (allClaims == null) allClaims = new ArrayList<>();
-        
-        for (RecruitsClaim claim : allClaims) {
-            if (claim.getOwnerFaction() == null) continue;
-            UUID leaderId = claim.getOwnerFaction().getTeamLeaderUUID();
-            if (leaderId == null) continue;
-            
-            for (ChunkPos cp : claim.getClaimedChunks()) {
-                recClaims.put(cp, leaderId);
+    public static void syncClaims(MinecraftServer server) {
+        IServerClaimsManagerAPI opac = OpenPACServerAPI.get(server).getServerClaimsManager();
+
+        // Who Recruits says owns each chunk, as the current leader of the owning faction.
+        Map<ChunkPos, UUID> recruitsOwners = new HashMap<>();
+        for (RecruitsClaim claim : ClaimEvents.recruitsClaimManager.getAllClaims()) {
+            if (claim == null || claim.isRemoved) continue;
+            RecruitsFaction faction = ClaimSyncManager.getLiveOwner(claim);
+            if (faction == null || faction.getTeamLeaderUUID() == null) continue;
+            for (ChunkPos pos : claim.getClaimedChunks()) {
+                recruitsOwners.put(pos, faction.getTeamLeaderUUID());
             }
         }
-        
-        // Temporarily disable our OPAC chunk listener requirements so we don't deduct emeralds during forced syncs
+
+        // Who OPAC says owns each overworld chunk.
+        Map<ChunkPos, UUID> opacOwners = new HashMap<>();
+        opac.getPlayerInfoStream().forEach(info -> {
+            IPlayerDimensionClaimsAPI dimension = info.getDimension(ClaimSyncManager.OVERWORLD);
+            if (dimension == null) return;
+            dimension.getStream().map(IPlayerClaimPosListAPI::getStream)
+                    .forEach(positions -> positions.forEach(pos -> opacOwners.put(pos, info.getPlayerId())));
+        });
+
+        Map<UUID, RecruitsFaction> factionsByLeader = ClaimSyncManager.getFactionsByLeader();
+        Set<ChunkPos> inSync = new HashSet<>();
+
         ClaimSyncManager.isSyncing = true;
         try {
-            // 3. Reconcile OPAC -> Recruits (if Recruits removed it or changed owner, update OPAC)
-            for (Map.Entry<ChunkPos, UUID> entry : opacClaims.entrySet()) {
-                ChunkPos opacChunk = entry.getKey();
-                UUID opacOwner = entry.getValue();
-                
-                UUID recOwner = recClaims.get(opacChunk);
-                if (recOwner == null) {
-                    // Claim no longer exists in Recruits (e.g. siege lost, abandoned), unclaim in OPAC
-                    opacManager.unclaim(overworldDim, opacChunk.x, opacChunk.z);
-                    FactionTerritoryConnector.LOGGER.info("Recruits sync: Unclaiming " + opacChunk + " in OPAC (removed in Recruits).");
-                } else if (!recOwner.equals(opacOwner)) {
-                    // Ownership mismatch (e.g. siege transferred it)
-                    opacManager.unclaim(overworldDim, opacChunk.x, opacChunk.z);
-                    opacManager.claim(overworldDim, recOwner, opacChunk.x, opacChunk.z, 0, true);
-                    FactionTerritoryConnector.LOGGER.info("Recruits sync: Transferred " + opacChunk + " in OPAC to " + recOwner);
+            // Recruits -> OPAC: claims made, conquered or handed to a new leader in Recruits.
+            for (Map.Entry<ChunkPos, UUID> entry : recruitsOwners.entrySet()) {
+                ChunkPos pos = entry.getKey();
+                UUID leader = entry.getValue();
+                UUID opacOwner = opacOwners.get(pos);
+                if (leader.equals(opacOwner)) {
+                    inSync.add(pos);
+                } else if (PlayerConfig.SERVER_CLAIM_UUID.equals(opacOwner)) {
+                    // Never overwrite server claims (spawn protection etc.).
+                    continue;
+                } else {
+                    opac.claim(ClaimSyncManager.OVERWORLD, leader, -1, pos.x, pos.z, false);
+                    inSync.add(pos);
+                    FactionTerritoryConnector.LOGGER.debug("Recruits sync: {} now belongs to {} in OPAC", pos, leader);
                 }
             }
-            
-            // 4. Reconcile Recruits -> OPAC (if Recruits claimed it but OPAC didn't know)
-            for (Map.Entry<ChunkPos, UUID> entry : recClaims.entrySet()) {
-                ChunkPos recChunk = entry.getKey();
-                UUID recOwner = entry.getValue();
-                
-                UUID opacOwner = opacClaims.get(recChunk);
-                if (opacOwner == null) {
-                    // Missing in OPAC
-                    opacManager.claim(overworldDim, recOwner, recChunk.x, recChunk.z, 0, true);
-                    FactionTerritoryConnector.LOGGER.info("Recruits sync: Forcing OPAC claim at " + recChunk + " for " + recOwner);
+
+            // OPAC claims of faction leaders that Recruits doesn't know about.
+            for (Map.Entry<ChunkPos, UUID> entry : opacOwners.entrySet()) {
+                ChunkPos pos = entry.getKey();
+                if (recruitsOwners.containsKey(pos)) continue;
+                RecruitsFaction faction = factionsByLeader.get(entry.getValue());
+                if (faction == null) continue; // Not faction territory (admin, server or factionless claims).
+
+                if (ClaimSyncManager.isManaged(pos)) {
+                    // It was in both before, so Recruits removed it: remove it from OPAC too.
+                    opac.unclaim(ClaimSyncManager.OVERWORLD, pos.x, pos.z);
+                    FactionTerritoryConnector.LOGGER.debug("Recruits sync: unclaimed {} in OPAC (removed in Recruits)", pos);
+                } else {
+                    // Never synced (e.g. claimed before this mod was installed): bring it into Recruits.
+                    RecruitsClaimEditor.queueAdd(pos, faction, entry.getValue());
                 }
             }
         } finally {
             ClaimSyncManager.isSyncing = false;
         }
+
+        ClaimSyncManager.setManaged(inSync);
+        // Imports mark themselves as managed once they're in Recruits.
+        RecruitsClaimEditor.flush(server);
     }
 }

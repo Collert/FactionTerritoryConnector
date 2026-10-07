@@ -15,16 +15,14 @@ public class FactionTerritoryConnector {
     public FactionTerritoryConnector() {
         MinecraftForge.EVENT_BUS.register(this);
         MinecraftForge.EVENT_BUS.register(new ClaimSyncManager());
+        MinecraftForge.EVENT_BUS.register(new CurrencyBridge());
+        MinecraftForge.EVENT_BUS.register(new RecruitsClaimEditor());
+        MinecraftForge.EVENT_BUS.register(new RecruitsSyncTask());
     }
 
     @SubscribeEvent
     public void onOPACAddonRegister(OPACServerAddonRegisterEvent event) {
-        LOGGER.info("Registering OPAC Addon for Faction Territory Connector...");
-        
-        // Register custom permission system to only allow faction leaders to claim
-        event.getPermissionSystemManager().register("faction_leader_only", new FactionClaimPermissionHandler());
-        
-        // Register claim tracker listener for synchronization
+        LOGGER.info("Registering OPAC claim listener for Faction Territory Connector");
         event.getClaimsManagerTrackerAPI().register(new OPACClaimListener());
     }
 }

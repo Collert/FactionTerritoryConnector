@@ -1,145 +1,128 @@
 package com.ftc;
 
-import xaero.pac.common.claims.tracker.api.IClaimsManagerListenerAPI;
-import xaero.pac.common.claims.player.api.IPlayerChunkClaimAPI;
-import xaero.pac.common.server.api.OpenPACServerAPI;
-import net.minecraft.core.registries.Registries;
-import net.minecraft.resources.ResourceKey;
+import com.talhanation.recruits.world.RecruitsFaction;
+import net.minecraft.ChatFormatting;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraftforge.server.ServerLifecycleHooks;
-import com.talhanation.recruits.world.RecruitsClaim;
-import com.talhanation.recruits.world.RecruitsFaction;
-import com.talhanation.recruits.world.RecruitsPlayerInfo;
-import com.talhanation.recruits.ClaimEvents;
+import xaero.pac.common.claims.player.api.IPlayerChunkClaimAPI;
+import xaero.pac.common.claims.tracker.api.IClaimsManagerListenerAPI;
+import xaero.pac.common.server.api.OpenPACServerAPI;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
 
+/**
+ * Reacts to every OPAC claim change: charges faction leaders for new chunks and mirrors the change into Recruits.
+ */
 public class OPACClaimListener implements IClaimsManagerListenerAPI {
 
-    private final Set<String> knownClaims = new HashSet<>();
+    /**
+     * Last known owner of every claimed chunk. OPAC only reports the new state, and also reports
+     * changes that keep the owner (forceloading, sub-claims), which must not be charged again.
+     */
+    private static final Map<String, UUID> knownOwners = new HashMap<>();
+
+    private static String key(ResourceLocation dimension, int chunkX, int chunkZ) {
+        return dimension + "|" + chunkX + "|" + chunkZ;
+    }
+
+    static void seedKnownOwners(MinecraftServer server) {
+        knownOwners.clear();
+        OpenPACServerAPI.get(server).getServerClaimsManager().getPlayerInfoStream().forEach(info ->
+                info.getStream().forEach(dimensionEntry ->
+                        dimensionEntry.getValue().getStream().forEach(posList ->
+                                posList.getStream().forEach(pos ->
+                                        knownOwners.put(key(dimensionEntry.getKey(), pos.x, pos.z), info.getPlayerId())))));
+        FactionTerritoryConnector.LOGGER.info("Tracking {} existing OPAC claims", knownOwners.size());
+    }
+
+    static void clearKnownOwners() {
+        knownOwners.clear();
+    }
 
     @Override
     public void onWholeRegionChange(@Nonnull ResourceLocation dimension, int regionX, int regionZ) {
     }
 
     @Override
-    public synchronized void onChunkChange(@Nonnull ResourceLocation dimension, int chunkX, int chunkZ, @Nullable IPlayerChunkClaimAPI claim) {
-        String claimId = dimension.toString() + ":" + chunkX + ":" + chunkZ;
-
-        if (ServerLifecycleHooks.getCurrentServer() == null) return;
-        
-        ResourceKey<net.minecraft.world.level.Level> levelKey = ResourceKey.create(Registries.DIMENSION, dimension);
-        ServerLevel level = ServerLifecycleHooks.getCurrentServer().getLevel(levelKey);
-        
-        if (level == null) return;
-        
-        ChunkPos cPos = new ChunkPos(chunkX, chunkZ);
-
-        if (ClaimSyncManager.isSyncing) {
-            if (claim != null) knownClaims.add(claimId);
-            else knownClaims.remove(claimId);
-            return;
-        }
-
-        if (claim != null) {
-            boolean isNew = knownClaims.add(claimId);
-            
-            if (isNew) {
-                ServerPlayer player = ServerLifecycleHooks.getCurrentServer().getPlayerList().getPlayer(claim.getPlayerId());
-                if (player != null && !player.hasPermissions(2)) {
-                    
-                    RecruitsFaction faction = ClaimSyncManager.getPlayerFaction(player);
-                    
-                    // Check Faction Leader
-                    if (faction == null || !ClaimSyncManager.isFactionLeader(player)) {
-                        knownClaims.remove(claimId);
-                        OpenPACServerAPI.get(ServerLifecycleHooks.getCurrentServer()).getServerClaimsManager()
-                            .unclaim(dimension, chunkX, chunkZ);
-                        player.displayClientMessage(net.minecraft.network.chat.Component.literal("You must be a faction leader to claim territory! Auto-unclaimed."), false);
-                        return;
-                    }
-
-                    // Check Emeralds
-                    int cost = CurrencyBridge.getChunkCost();
-                    if (!CurrencyBridge.doPayment(player, cost)) {
-                        knownClaims.remove(claimId);
-                        OpenPACServerAPI.get(ServerLifecycleHooks.getCurrentServer()).getServerClaimsManager()
-                            .unclaim(dimension, chunkX, chunkZ);
-                        player.displayClientMessage(net.minecraft.network.chat.Component.literal("Not enough emeralds to claim! Auto-unclaimed. Cost: " + cost), false);
-                    } else {
-                        player.displayClientMessage(net.minecraft.network.chat.Component.literal("Paid " + cost + " Emeralds for claim."), false);
-                        FactionTerritoryConnector.LOGGER.info("Chunk was claimed at " + chunkX + ", " + chunkZ + " in " + dimension.toString() + " by " + claim.getPlayerId());
-                        
-                        // Update OPAC map info explicitly on new claim to keep faction names in sync
-                        ClaimSyncManager.updateClaimName(player);
-                        
-                        // Create and register RecruitsClaim
-                        RecruitsClaim existingClaim = ClaimEvents.recruitsClaimManager.getClaim(cPos);
-                        if (existingClaim == null) {
-                            RecruitsClaim newClaim = new RecruitsClaim(faction.teamDisplayName, faction);
-                            newClaim.setCenter(cPos);
-                            newClaim.addChunk(cPos);
-                            
-                            RecruitsPlayerInfo pInfo = new RecruitsPlayerInfo(player.getUUID(), player.getScoreboardName(), faction);
-                            newClaim.setPlayer(pInfo);
-                            
-                            ClaimEvents.recruitsClaimManager.addOrUpdateClaim(level, newClaim);
-                        } else {
-                            existingClaim.addChunk(cPos);
-                            ClaimEvents.recruitsClaimManager.addOrUpdateClaim(level, existingClaim);
-                        }
-                    }
-                } else if (player != null) {
-                    // Admin claim bypasses requirements
-                    FactionTerritoryConnector.LOGGER.info("Admin chunk claim bypassed at " + chunkX + ", " + chunkZ);
-                    
-                    RecruitsFaction faction = ClaimSyncManager.getPlayerFaction(player);
-                    if (faction != null) {
-                        RecruitsClaim existingClaim = ClaimEvents.recruitsClaimManager.getClaim(cPos);
-                        if (existingClaim == null) {
-                            RecruitsClaim newClaim = new RecruitsClaim(faction.teamDisplayName, faction);
-                            newClaim.setCenter(cPos);
-                            newClaim.addChunk(cPos);
-                            
-                            RecruitsPlayerInfo pInfo = new RecruitsPlayerInfo(player.getUUID(), player.getScoreboardName(), faction);
-                            newClaim.setPlayer(pInfo);
-                            
-                            ClaimEvents.recruitsClaimManager.addOrUpdateClaim(level, newClaim);
-                        } else {
-                            existingClaim.addChunk(cPos);
-                            ClaimEvents.recruitsClaimManager.addOrUpdateClaim(level, existingClaim);
-                        }
-                    }
-                }
-            }
-        } else {
-            knownClaims.remove(claimId);
-            RecruitsClaim existingClaim = ClaimEvents.recruitsClaimManager.getClaim(cPos);
-            if (existingClaim != null) {
-                existingClaim.removeChunk(cPos);
-                
-                // If no chunks left, delete the claim entirely
-                if (existingClaim.getClaimedChunks().isEmpty()) {
-                    ClaimEvents.recruitsClaimManager.removeClaim(existingClaim);
-                } else {
-                    // Otherwise, just update it without the chunk
-                    // Set center to first available chunk if center was removed
-                    if (cPos.equals(existingClaim.getCenter()) && !existingClaim.getClaimedChunks().isEmpty()) {
-                        existingClaim.setCenter(existingClaim.getClaimedChunks().get(0));
-                    }
-                    ClaimEvents.recruitsClaimManager.addOrUpdateClaim(level, existingClaim);
-                }
-            }
-        }
+    public void onDimensionChange(@Nonnull ResourceLocation dimension) {
     }
 
     @Override
-    public void onDimensionChange(@Nonnull ResourceLocation dimension) {
+    public void onChunkChange(@Nonnull ResourceLocation dimension, int chunkX, int chunkZ, @Nullable IPlayerChunkClaimAPI claim) {
+        String key = key(dimension, chunkX, chunkZ);
+        UUID newOwner = claim == null ? null : claim.getPlayerId();
+        UUID oldOwner = newOwner == null ? knownOwners.remove(key) : knownOwners.put(key, newOwner);
+
+        if (ClaimSyncManager.isSyncing || Objects.equals(oldOwner, newOwner)) return;
+        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+        if (server == null) return;
+
+        ChunkPos pos = new ChunkPos(chunkX, chunkZ);
+        boolean overworld = ClaimSyncManager.OVERWORLD.equals(dimension);
+
+        if (newOwner == null) {
+            if (overworld && oldOwner != null) RecruitsClaimEditor.queueRemove(pos, oldOwner);
+            return;
+        }
+
+        ServerPlayer player = server.getPlayerList().getPlayer(newOwner);
+        RecruitsFaction faction;
+        if (player != null && !FactionClaimPermissionHandler.isBypassing(player)) {
+            // A normal player claim: enforce leadership and take payment.
+            faction = ClaimSyncManager.getPlayerFaction(player);
+            Component reason = FactionClaimPermissionHandler.getClaimBlockReason(player);
+            if (reason == null && overworld && RecruitsClaimEditor.isClaimedByOtherFaction(pos, faction)) {
+                reason = Component.literal("That chunk is Recruits territory of another faction.").withStyle(ChatFormatting.RED);
+            }
+            // Already the faction's Recruits territory (the sync task just hasn't caught up): don't charge twice.
+            boolean alreadyPaid = reason == null && overworld && RecruitsClaimEditor.isClaimedByFaction(pos, faction);
+            if (reason == null && !alreadyPaid && !CurrencyBridge.tryCharge(player, CurrencyBridge.getChunkCost())) {
+                reason = Component.literal("Not enough " + CurrencyBridge.getCurrencyName() + " to claim more chunks.").withStyle(ChatFormatting.RED);
+            }
+            if (reason != null) {
+                revert(server, dimension, chunkX, chunkZ, oldOwner);
+                CurrencyBridge.recordFailure(player, reason);
+                return;
+            }
+            if (!alreadyPaid) CurrencyBridge.recordPayment(player, CurrencyBridge.getChunkCost());
+        } else {
+            // Admin/server-mode claims, and claims made through the API or for offline players, are free.
+            // They only become faction territory if the owner leads a faction.
+            faction = ClaimSyncManager.getFactionLedBy(newOwner);
+            if (faction == null) {
+                if (overworld && oldOwner != null) RecruitsClaimEditor.queueRemove(pos, oldOwner);
+                return;
+            }
+        }
+
+        if (overworld) {
+            if (oldOwner != null) RecruitsClaimEditor.queueRemove(pos, oldOwner);
+            RecruitsClaimEditor.queueAdd(pos, faction, newOwner);
+        }
+        ClaimSyncManager.applyTerritoryName(server, newOwner, faction);
+    }
+
+    private static void revert(MinecraftServer server, ResourceLocation dimension, int chunkX, int chunkZ, @Nullable UUID oldOwner) {
+        boolean wasSyncing = ClaimSyncManager.isSyncing;
+        ClaimSyncManager.isSyncing = true;
+        try {
+            var claims = OpenPACServerAPI.get(server).getServerClaimsManager();
+            if (oldOwner == null) {
+                claims.unclaim(dimension, chunkX, chunkZ);
+            } else {
+                claims.claim(dimension, oldOwner, -1, chunkX, chunkZ, false);
+            }
+        } finally {
+            ClaimSyncManager.isSyncing = wasSyncing;
+        }
     }
 }
